@@ -26,6 +26,66 @@ remain in ~/ecnl/data. A new installation starts with no accounts or license.
 EOF
 }
 fail() { echo "Error: $*" >&2; exit 1; }
+
+format_bytes() {
+    local bytes="${1:-0}" tenths
+    if [ "$bytes" -ge 1048576 ]; then
+        tenths=$((bytes * 10 / 1048576))
+        printf '%s.%s MB' "$((tenths / 10))" "$((tenths % 10))"
+    elif [ "$bytes" -ge 1024 ]; then
+        tenths=$((bytes * 10 / 1024))
+        printf '%s.%s KB' "$((tenths / 10))" "$((tenths % 10))"
+    else
+        printf '%s B' "$bytes"
+    fi
+}
+
+clear_progress() {
+    if [ -t 1 ]; then printf '\r\033[2K'; fi
+}
+
+download_file() {
+    local url="$1" destination="$2" label="$3" completed="$4"
+    local partial="${2}.partial" errors="${2}.error" headers="${2}.headers"
+    local frame=0 downloaded=0 total=0 percent status detail
+    local -a frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    if [ ! -t 1 ]; then printf '%s…\n' "$label"; fi
+    curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --connect-timeout 15 \
+        --max-time 300 --dump-header "$headers" -o "$partial" "$url" 2>"$errors" &
+    DOWNLOAD_PID=$!
+    while kill -0 "$DOWNLOAD_PID" 2>/dev/null; do
+        if [ -t 1 ]; then
+            downloaded=0
+            [ ! -f "$partial" ] || downloaded="$(stat -c %s "$partial")"
+            total="$(sed -n 's/^[Cc]ontent-[Ll]ength:[[:space:]]*\([0-9]*\).*/\1/p' "$headers" 2>/dev/null | tail -n 1)" || total=0
+            [[ "$total" =~ ^[0-9]+$ ]] || total=0
+            if [ "$total" -gt 0 ]; then
+                percent=$((downloaded * 100 / total))
+                [ "$percent" -le 100 ] || percent=100
+                printf '\r\033[2K%s %s  %3s%% · %s / %s' \
+                    "${frames[frame % 10]}" "$label" "$percent" \
+                    "$(format_bytes "$downloaded")" "$(format_bytes "$total")"
+            else
+                printf '\r\033[2K%s %s · %s' "${frames[frame % 10]}" "$label" "$(format_bytes "$downloaded")"
+            fi
+        fi
+        frame=$((frame + 1))
+        sleep 0.1
+    done
+    if wait "$DOWNLOAD_PID"; then status=0; else status=$?; fi
+    DOWNLOAD_PID=""
+    clear_progress
+    if [ "$status" -ne 0 ]; then
+        detail="$(sed -n '1p' "$errors")"
+        [ -n "$detail" ] || detail="curl exited with status $status"
+        fail "$label failed: $detail"
+    fi
+    mv -f -- "$partial" "$destination"
+    downloaded="$(stat -c %s "$destination")"
+    rm -f -- "$errors" "$headers"
+    printf '✓ %s · %s\n' "$completed" "$(format_bytes "$downloaded")"
+}
+
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --repo|--version|--prefix|--install-dir|--archive|--checksum)
@@ -79,7 +139,13 @@ WORK_DIR="$(mktemp -d "$APP_ROOT/.install.XXXXXX")"
 LAUNCHER_TEMP=""
 RELEASE_DIR=""
 ACTIVATED=0
+DOWNLOAD_PID=""
 cleanup() {
+    if [ -n "$DOWNLOAD_PID" ]; then
+        kill "$DOWNLOAD_PID" 2>/dev/null || true
+        wait "$DOWNLOAD_PID" 2>/dev/null || true
+        clear_progress
+    fi
     rm -rf -- "$WORK_DIR"
     [ -z "$LAUNCHER_TEMP" ] || rm -f -- "$LAUNCHER_TEMP"
     if [ "$ACTIVATED" -eq 0 ] && [ -n "$RELEASE_DIR" ]; then
@@ -87,6 +153,10 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+printf '\nECNL INSTALLER\nTermux ARM64\n\n'
 
 if [ -n "$LOCAL_ARCHIVE" ]; then
     [ -n "$LOCAL_CHECKSUM" ] || fail "--archive requires --checksum."
@@ -113,8 +183,11 @@ else
         if [ "$VERSION" != latest ]; then
             RELEASE_ARGS+=("$VERSION")
         fi
+        printf 'Downloading ECNL…\n'
         gh release download "${RELEASE_ARGS[@]}" --repo "$REPO" --dir "$WORK_DIR" \
-            --pattern "$ASSET" --pattern SHA256SUMS
+            --pattern "$ASSET" --pattern SHA256SUMS > "$WORK_DIR/download.log" 2>&1 \
+            || fail "Download failed: $(sed -n '1p' "$WORK_DIR/download.log")"
+        printf '✓ Download complete · %s\n' "$(format_bytes "$(stat -c %s "$WORK_DIR/$ASSET")")"
     else
     command -v curl >/dev/null || fail "Missing curl. Run: pkg install curl"
     if [ "$VERSION" = latest ]; then
@@ -122,9 +195,8 @@ else
     else
         DOWNLOAD_URL="https://github.com/$REPO/releases/download/$VERSION"
     fi
-    echo "Downloading ECNL ($VERSION, $ARCH)..."
-    curl --proto '=https' --tlsv1.2 -fL --retry 3 "$DOWNLOAD_URL/$ASSET" -o "$WORK_DIR/$ASSET"
-    curl --proto '=https' --tlsv1.2 -fL --retry 3 "$DOWNLOAD_URL/SHA256SUMS" -o "$WORK_DIR/SHA256SUMS"
+    download_file "$DOWNLOAD_URL/$ASSET" "$WORK_DIR/$ASSET" "Downloading ECNL" "Download complete"
+    download_file "$DOWNLOAD_URL/SHA256SUMS" "$WORK_DIR/SHA256SUMS" "Downloading checksum" "Checksum received"
     fi
 fi
 
@@ -138,7 +210,8 @@ while read -r digest filename extra; do
     CHECKSUM="$digest"
 done < "$WORK_DIR/SHA256SUMS"
 [ -n "$CHECKSUM" ] || fail "Archive checksum is missing."
-(cd "$WORK_DIR" && printf '%s  %s\n' "$CHECKSUM" "$ASSET" | sha256sum -c -)
+(cd "$WORK_DIR" && printf '%s  %s\n' "$CHECKSUM" "$ASSET" | sha256sum --status -c -) || fail "Release checksum verification failed."
+printf '✓ Release checksum verified\n'
 
 # Release packages have a single ecnl/ root. Reject unexpected paths.
 tar -tzf "$WORK_DIR/$ASSET" > "$WORK_DIR/contents.txt"
@@ -151,6 +224,7 @@ while IFS= read -r entry; do
         */../*|*/./*) fail "Unsafe archive path: $entry" ;;
     esac
 done < "$WORK_DIR/contents.txt"
+printf 'Extracting release…\n'
 tar --no-same-owner --no-same-permissions -xzf "$WORK_DIR/$ASSET" -C "$WORK_DIR"
 [ -f "$WORK_DIR/ecnl/ecnl-auto-solver" ] || fail "Executable is missing from the archive."
 chmod +x "$WORK_DIR/ecnl/ecnl-auto-solver"
@@ -163,9 +237,13 @@ else
 fi
 [[ "$PACKAGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Package version must be MAJOR.MINOR.PATCH."
 printf '%s\n' "$PACKAGE_VERSION" > "$WORK_DIR/ecnl/VERSION"
-echo "Checking the downloaded app..."
-"$WORK_DIR/ecnl/ecnl-auto-solver" --help >/dev/null
-"$WORK_DIR/ecnl/ecnl-auto-solver" tui --smoke-test
+printf '✓ Release extracted\nChecking app…\n'
+if ! "$WORK_DIR/ecnl/ecnl-auto-solver" --help > "$WORK_DIR/startup.log" 2>&1 || \
+   ! "$WORK_DIR/ecnl/ecnl-auto-solver" tui --smoke-test >> "$WORK_DIR/startup.log" 2>&1; then
+    cat "$WORK_DIR/startup.log" >&2
+    fail "App startup check failed."
+fi
+printf '✓ App ready\n'
 
 RELEASE_DIR="$(mktemp -d "$APP_ROOT/releases/$VERSION.XXXXXX")"
 mv -- "$WORK_DIR/ecnl" "$RELEASE_DIR/app"
@@ -293,10 +371,7 @@ mv -f -- "$WORK_DIR/launcher-copy" "$APP_ROOT/.launcher-copy"
 printf '%s\n' 'ECNL installer-managed directory' > "$APP_ROOT/.ecnl-install"
 mv -f -- "$LAUNCHER_TEMP" "$BIN_DIR/ecnl"
 LAUNCHER_TEMP=""
-echo "Installed in $APP_ROOT. Run: ecnl"
-echo "CLI examples: ecnl status | ecnl run --task math | ecnl license activate"
-echo "New releases update automatically when ecnl starts."
-echo "Uninstall with confirmation: ecnl uninstall"
+printf '\nInstalled in %s\nRun: ecnl\n' "$APP_ROOT"
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
     *) echo "Add $BIN_DIR to PATH to use the ecnl command." ;;

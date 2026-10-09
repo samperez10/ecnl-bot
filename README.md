@@ -18,7 +18,7 @@ interface or CLI. Built for **Android Termux on ARM64 / aarch64**.
 
 ```sh
 pkg install curl tar coreutils util-linux
-curl -fL https://github.com/samperez10/ecnl-bot/releases/latest/download/install.sh -o install-ecnl.sh
+curl -fsSL https://github.com/samperez10/ecnl-bot/releases/latest/download/install.sh -o install-ecnl.sh
 bash install-ecnl.sh
 ```
 
