@@ -14,6 +14,12 @@ interface or CLI. Built for **Android Termux on ARM64 / aarch64**.
 - Pause or stop individual accounts or all accounts.
 - Set cooldowns and per-account wallet targets.
 
+## Sneak peek
+
+| Main menu | Live account monitor |
+| --- | --- |
+| <img src="docs/images/main-menu.jpg" alt="ECNL main menu" width="340"> | <img src="docs/images/account-monitor.jpg" alt="ECNL running Body Parts tasks across four accounts" width="340"> |
+
 ## Install
 
 ```sh
