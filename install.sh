@@ -57,9 +57,24 @@ done
 
 ASSET="ecnl-termux-$ARCH.tar.gz"
 mkdir -p "$INSTALL_DIR"
-APP_ROOT="$(CDPATH= cd -- "$INSTALL_DIR" && pwd)"
+APP_ROOT="$(CDPATH= cd -- "$INSTALL_DIR" && pwd -P)"
+HOME_ROOT="$(CDPATH= cd -- "$HOME" && pwd -P)"
+case "$APP_ROOT" in
+    /|"$HOME_ROOT"|"${PREFIX:-/data/data/com.termux/files/usr}")
+        fail "Choose a dedicated ECNL installation folder." ;;
+esac
+# The uninstall command removes this whole folder, so it must be dedicated.
+shopt -s nullglob dotglob
+for entry in "$APP_ROOT"/*; do
+    case "$(basename -- "$entry")" in
+        releases|current|data|uninstall.sh|.ecnl-install|.launcher-copy|.install.*) ;;
+        *) fail "Installation folder contains unrelated files: $entry" ;;
+    esac
+done
+shopt -u nullglob dotglob
 BIN_DIR="$INSTALL_PREFIX/bin"
 mkdir -p "$APP_ROOT/releases" "$BIN_DIR"
+BIN_DIR="$(CDPATH= cd -- "$BIN_DIR" && pwd -P)"
 WORK_DIR="$(mktemp -d "$APP_ROOT/.install.XXXXXX")"
 LAUNCHER_TEMP=""
 RELEASE_DIR=""
@@ -138,9 +153,45 @@ LAUNCHER_TEMP="$(mktemp "$BIN_DIR/.ecnl.XXXXXX")"
     printf '%s\n' '#!/data/data/com.termux/files/usr/bin/bash' 'set -eu'
     printf 'APP_ROOT=%q\n' "$APP_ROOT"
     cat <<'EOF'
+if [ "${1:-}" = uninstall ]; then
+    shift
+    [ "$#" -eq 0 ] || { echo "Usage: ecnl uninstall" >&2; exit 1; }
+    exec bash "$APP_ROOT/uninstall.sh"
+fi
 exec "$APP_ROOT/current/ecnl-auto-solver" --config "$APP_ROOT/data/config.json" "$@"
 EOF
 } > "$LAUNCHER_TEMP"
+{
+    printf '%s\n' '#!/data/data/com.termux/files/usr/bin/bash' 'set -euo pipefail'
+    printf 'APP_ROOT=%q\n' "$APP_ROOT"
+    printf 'LAUNCHER=%q\n' "$BIN_DIR/ecnl"
+    cat <<'EOF'
+[ -f "$APP_ROOT/.ecnl-install" ] || { echo "ECNL installation marker is missing; nothing removed." >&2; exit 1; }
+case "$APP_ROOT" in
+    ''|/|"$HOME"|"${PREFIX:-/data/data/com.termux/files/usr}")
+        echo "Refusing to remove a system or home directory." >&2; exit 1 ;;
+esac
+printf 'Remove ECNL from %s and delete ALL accounts, passwords, sessions, logs, and local license data? [y/N] ' "$APP_ROOT"
+if ! IFS= read -r answer; then
+    echo
+    echo "Uninstall cancelled."
+    exit 0
+fi
+case "$answer" in
+    y|Y|yes|YES) ;;
+    *) echo "Uninstall cancelled."; exit 0 ;;
+esac
+# Unlink this installation's launcher only. Another install may now own it.
+if [ -f "$LAUNCHER" ] && cmp -s "$LAUNCHER" "$APP_ROOT/.launcher-copy"; then
+    rm -f -- "$LAUNCHER"
+fi
+rm -rf -- "$APP_ROOT"
+echo "ECNL uninstalled, including all local data."
+echo "This does not release the license's server-side installation binding."
+EOF
+} > "$WORK_DIR/uninstall.sh"
+chmod 700 "$WORK_DIR/uninstall.sh"
+cp -- "$LAUNCHER_TEMP" "$WORK_DIR/launcher-copy"
 # Create only the install's own empty config; never import existing accounts.
 mkdir -p "$APP_ROOT/data"
 if [ ! -e "$APP_ROOT/data/config.json" ]; then
@@ -150,10 +201,14 @@ chmod 755 "$LAUNCHER_TEMP"
 ln -s "releases/$(basename -- "$RELEASE_DIR")/app" "$WORK_DIR/current"
 mv -Tf -- "$WORK_DIR/current" "$APP_ROOT/current"
 ACTIVATED=1
+mv -f -- "$WORK_DIR/uninstall.sh" "$APP_ROOT/uninstall.sh"
+mv -f -- "$WORK_DIR/launcher-copy" "$APP_ROOT/.launcher-copy"
+printf '%s\n' 'ECNL installer-managed directory' > "$APP_ROOT/.ecnl-install"
 mv -f -- "$LAUNCHER_TEMP" "$BIN_DIR/ecnl"
 LAUNCHER_TEMP=""
 echo "Installed in $APP_ROOT. Run: ecnl"
 echo "CLI examples: ecnl status | ecnl run --task math | ecnl license activate"
+echo "Uninstall with confirmation: ecnl uninstall"
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
     *) echo "Add $BIN_DIR to PATH to use the ecnl command." ;;

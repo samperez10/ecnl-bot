@@ -181,6 +181,23 @@ To install a specific release:
 bash install-ecnl.sh --version v1.0.0
 ```
 
+## Uninstall
+
+```sh
+ecnl uninstall
+```
+
+The launcher asks for confirmation before deleting **the entire installation**:
+the app versions, launcher, accounts, passwords, sessions, logs, and local
+license identity. Enter `y` to remove everything; Enter, `n`, or no input
+cancels. There are no extra uninstall flags.
+
+Removing the local license identity does not release its server-side
+installation binding. Stop any running ECNL sessions before uninstalling.
+
+If you installed an earlier installer, run the updated installer once to add
+this command. Your accounts and license data are preserved during that update.
+
 ## Troubleshooting
 
 - **No enabled accounts:** add an account through the TUI or `ecnl setup`, then enable it in Manage Accounts.
