@@ -32,7 +32,7 @@ Linux, Windows, or macOS executable.
 Run in Termux:
 
 ```sh
-pkg install curl tar coreutils
+pkg install curl tar coreutils util-linux
 curl -fL https://github.com/samperez10/ecnl-bot/releases/latest/download/install.sh -o install-ecnl.sh
 bash install-ecnl.sh
 ```
@@ -164,16 +164,29 @@ installation data.
 
 ## Updates
 
-Download and run the installer again to install the latest release:
+Every time you launch `ecnl`, the launcher checks the latest GitHub Release.
+When it finds a newer version, it downloads and installs it **without asking**,
+then opens the updated app with your original command and arguments. Running
+sessions continue using their existing version.
+
+Updates preserve `~/ecnl/data/`, including your accounts, settings, saved
+sessions, and license identity. The installer verifies the archive checksum and
+checks CLI and TUI startup before switching versions. If the check or update
+fails, the launcher opens the installed app. It never automatically downgrades.
+An offline update check times out after eight seconds for public releases.
+
+**Existing installations:** run the updated installer once to enable automatic
+updates. No app rebuild is needed to add the launcher updater:
 
 ```sh
 curl -fL https://github.com/samperez10/ecnl-bot/releases/latest/download/install.sh -o install-ecnl.sh
 bash install-ecnl.sh
 ```
 
-Updates preserve `~/ecnl/data/`, including your accounts, settings, saved
-sessions, and license identity. The installer checks the new build before
-switching the active application version.
+Future releases must use version tags such as `v1.0.1` and include
+`install.sh`, `ecnl-termux-aarch64.tar.gz`, and `SHA256SUMS`. Publish a new
+version tag for each app update; replacing files under the same tag does not
+trigger an automatic update.
 
 To install a specific release:
 
@@ -204,14 +217,14 @@ this command. Your accounts and license data are preserved during that update.
 - **License inactive:** use `ecnl license activate` or `ecnl license refresh` and check the reported reason.
 - **Login failed:** check the account credentials in Manage Accounts and verify that the account can sign in to ECNL.
 - **Unsupported architecture:** this release requires aarch64 / ARM64 Termux.
-- **Missing installer tools:** run `pkg install curl tar coreutils`.
+- **Missing installer tools:** run `pkg install curl tar coreutils util-linux`.
 - **Need diagnostic output:** add `--verbose` to the CLI command or open View Logs in the TUI.
 
 If the repository is made private again, users with repository access can
 install through an authenticated GitHub CLI session:
 
 ```sh
-pkg install gh tar coreutils
+pkg install gh tar coreutils util-linux
 gh auth login
 gh release download --repo samperez10/ecnl-bot --pattern install.sh --clobber
 bash install.sh --github-auth

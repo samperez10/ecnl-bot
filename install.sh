@@ -51,8 +51,8 @@ case "$(uname -m)" in
     *) fail "This release supports aarch64 Termux only." ;;
 esac
 [[ "$VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "Invalid release tag."
-for tool in tar sha256sum mktemp; do
-    command -v "$tool" >/dev/null || fail "Missing $tool. Run: pkg install coreutils tar"
+for tool in tar sha256sum mktemp flock; do
+    command -v "$tool" >/dev/null || fail "Missing $tool. Run: pkg install coreutils tar util-linux"
 done
 
 ASSET="ecnl-termux-$ARCH.tar.gz"
@@ -67,7 +67,7 @@ esac
 shopt -s nullglob dotglob
 for entry in "$APP_ROOT"/*; do
     case "$(basename -- "$entry")" in
-        releases|current|data|uninstall.sh|.ecnl-install|.launcher-copy|.install.*) ;;
+        releases|current|data|uninstall.sh|update.sh|.update-lock|.ecnl-install|.launcher-copy|.install.*) ;;
         *) fail "Installation folder contains unrelated files: $entry" ;;
     esac
 done
@@ -95,6 +95,18 @@ if [ -n "$LOCAL_ARCHIVE" ]; then
 else
     [ -z "$LOCAL_CHECKSUM" ] || fail "--checksum requires --archive."
     [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "Specify --repo OWNER/REPO."
+    if [ "$VERSION" = latest ]; then
+        if [ "$GITHUB_AUTH" -eq 1 ]; then
+            command -v gh >/dev/null || fail "Private downloads require gh. Run: pkg install gh; gh auth login"
+            VERSION="$(gh api "repos/$REPO/releases/latest" --jq .tag_name)"
+        else
+            command -v curl >/dev/null || fail "Missing curl. Run: pkg install curl"
+            RELEASE_URL="$(curl --proto '=https' --tlsv1.2 -fsSIL --max-time 15 \
+                -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest")"
+            VERSION="${RELEASE_URL##*/}"
+        fi
+        [[ "$VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Latest release must have a version tag such as v1.0.1."
+    fi
     if [ "$GITHUB_AUTH" -eq 1 ]; then
         command -v gh >/dev/null || fail "Private downloads require gh. Run: pkg install gh; gh auth login"
         RELEASE_ARGS=()
@@ -142,6 +154,15 @@ done < "$WORK_DIR/contents.txt"
 tar --no-same-owner --no-same-permissions -xzf "$WORK_DIR/$ASSET" -C "$WORK_DIR"
 [ -f "$WORK_DIR/ecnl/ecnl-auto-solver" ] || fail "Executable is missing from the archive."
 chmod +x "$WORK_DIR/ecnl/ecnl-auto-solver"
+if [ "$VERSION" = latest ]; then
+    # Offline packages carry their version in the release manifest.
+    [ -f "$WORK_DIR/ecnl/release.json" ] || fail "Local package has no version metadata; specify --version."
+    PACKAGE_VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$WORK_DIR/ecnl/release.json")"
+else
+    PACKAGE_VERSION="${VERSION#v}"
+fi
+[[ "$PACKAGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Package version must be MAJOR.MINOR.PATCH."
+printf '%s\n' "$PACKAGE_VERSION" > "$WORK_DIR/ecnl/VERSION"
 echo "Checking the downloaded app..."
 "$WORK_DIR/ecnl/ecnl-auto-solver" --help >/dev/null
 "$WORK_DIR/ecnl/ecnl-auto-solver" tui --smoke-test
@@ -158,6 +179,7 @@ if [ "${1:-}" = uninstall ]; then
     [ "$#" -eq 0 ] || { echo "Usage: ecnl uninstall" >&2; exit 1; }
     exec bash "$APP_ROOT/uninstall.sh"
 fi
+bash "$APP_ROOT/update.sh" || echo "Update check failed; starting installed ECNL." >&2
 exec "$APP_ROOT/current/ecnl-auto-solver" --config "$APP_ROOT/data/config.json" "$@"
 EOF
 } > "$LAUNCHER_TEMP"
@@ -192,6 +214,70 @@ EOF
 } > "$WORK_DIR/uninstall.sh"
 chmod 700 "$WORK_DIR/uninstall.sh"
 cp -- "$LAUNCHER_TEMP" "$WORK_DIR/launcher-copy"
+{
+    printf '%s\n' '#!/data/data/com.termux/files/usr/bin/bash' 'set -euo pipefail' 'umask 077'
+    printf 'APP_ROOT=%q\n' "$APP_ROOT"
+    printf 'INSTALL_PREFIX=%q\n' "$(dirname -- "$BIN_DIR")"
+    printf 'REPO=%q\n' "$REPO"
+    printf 'GITHUB_AUTH=%q\n' "$GITHUB_AUTH"
+    cat <<'EOF'
+# Checking and installing are serialized across simultaneous launcher invocations.
+LOCK="$APP_ROOT/.update-lock"
+# A kernel lock is released even if Android kills this process.
+exec 9> "$LOCK"
+flock -n 9 || exit 0
+UPDATE_DIR=""
+cleanup_update() {
+    [ -z "$UPDATE_DIR" ] || rm -rf -- "$UPDATE_DIR"
+}
+trap cleanup_update EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+if [ "$GITHUB_AUTH" -eq 1 ]; then
+    LATEST="$(timeout 10 gh api "repos/$REPO/releases/latest" --jq .tag_name 2>/dev/null)" || exit 0
+else
+    URL="$(curl --proto '=https' --tlsv1.2 -fsSIL --connect-timeout 3 --max-time 8 \
+        -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest" 2>/dev/null)" || exit 0
+    LATEST="${URL##*/}"
+fi
+[[ "$LATEST" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || exit 0
+NEW_PARTS=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}")
+IFS= read -r CURRENT < "$APP_ROOT/current/VERSION" || exit 0
+[[ "$CURRENT" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || exit 0
+OLD_PARTS=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}")
+NEWER=0
+for i in 0 1 2; do
+    # Bound numeric input before Bash arithmetic and compare decimal components.
+    [ "${#NEW_PARTS[i]}" -le 8 ] && [ "${#OLD_PARTS[i]}" -le 8 ] || exit 0
+    new=$((10#${NEW_PARTS[i]}))
+    old=$((10#${OLD_PARTS[i]}))
+    if [ "$new" -gt "$old" ]; then NEWER=1; break; fi
+    if [ "$new" -lt "$old" ]; then exit 0; fi
+done
+[ "$NEWER" -eq 1 ] || exit 0
+UPDATE_DIR="$(mktemp -d "$APP_ROOT/.install.update.XXXXXX")"
+INSTALLER="$UPDATE_DIR/install.sh"
+AUTH_ARGS=()
+if [ "$GITHUB_AUTH" -eq 1 ]; then
+    AUTH_ARGS+=(--github-auth)
+    timeout 60 gh release download "$LATEST" --repo "$REPO" --dir "$UPDATE_DIR" \
+        --pattern install.sh || exit 0
+else
+    curl --proto '=https' --tlsv1.2 -fsSL --connect-timeout 5 --max-time 60 \
+        "https://github.com/$REPO/releases/download/$LATEST/install.sh" -o "$INSTALLER" || exit 0
+fi
+bash -n "$INSTALLER" || exit 0
+echo "Updating ECNL $CURRENT → ${LATEST#v}..."
+if bash "$INSTALLER" --repo "$REPO" --version "$LATEST" --prefix "$INSTALL_PREFIX" \
+    --install-dir "$APP_ROOT" "${AUTH_ARGS[@]}"; then
+    echo "ECNL updated. Starting app..."
+else
+    echo "Update failed; starting the installed version." >&2
+fi
+EOF
+} > "$WORK_DIR/update.sh"
+chmod 700 "$WORK_DIR/update.sh"
 # Create only the install's own empty config; never import existing accounts.
 mkdir -p "$APP_ROOT/data"
 if [ ! -e "$APP_ROOT/data/config.json" ]; then
@@ -202,12 +288,14 @@ ln -s "releases/$(basename -- "$RELEASE_DIR")/app" "$WORK_DIR/current"
 mv -Tf -- "$WORK_DIR/current" "$APP_ROOT/current"
 ACTIVATED=1
 mv -f -- "$WORK_DIR/uninstall.sh" "$APP_ROOT/uninstall.sh"
+mv -f -- "$WORK_DIR/update.sh" "$APP_ROOT/update.sh"
 mv -f -- "$WORK_DIR/launcher-copy" "$APP_ROOT/.launcher-copy"
 printf '%s\n' 'ECNL installer-managed directory' > "$APP_ROOT/.ecnl-install"
 mv -f -- "$LAUNCHER_TEMP" "$BIN_DIR/ecnl"
 LAUNCHER_TEMP=""
 echo "Installed in $APP_ROOT. Run: ecnl"
 echo "CLI examples: ecnl status | ecnl run --task math | ecnl license activate"
+echo "New releases update automatically when ecnl starts."
 echo "Uninstall with confirmation: ecnl uninstall"
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
