@@ -1,3 +1,4 @@
 *.tar.gz
 SHA256SUMS
 __pycache__/
+tests/
