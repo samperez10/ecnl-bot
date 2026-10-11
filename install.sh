@@ -121,11 +121,16 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-case "$(uname -m)" in
+# Prefer Ubuntu/Debian's userspace architecture over the host kernel.
+MACHINE="$(uname -m)"
+if [ "$PLATFORM" = linux ] && command -v dpkg >/dev/null; then
+    MACHINE="$(dpkg --print-architecture)"
+fi
+case "$MACHINE" in
     aarch64|arm64) ARCH="aarch64" ;;
-    armv7l|armv8l) ARCH="armhf" ;;
+    armhf|armv7l|armv8l) ARCH="armhf" ;;
     x86_64|amd64) ARCH="x86_64" ;;
-    *) fail "Unsupported architecture: $(uname -m)" ;;
+    *) fail "Unsupported architecture: $MACHINE" ;;
 esac
 if [ "$PLATFORM" = termux ]; then
     [ "$ARCH" = aarch64 ] || fail "The Termux release requires ARM64."

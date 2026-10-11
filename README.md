@@ -4,8 +4,8 @@
 
 ECNL Auto Solver automates supported challenges on
 [ECNL Media Market](https://ecnlmediamarket.com/) through an interactive terminal
-interface or CLI. Available for **Android Termux ARM64** and **Ubuntu 22.04 ARMHF**
-(including Orange Pi PC).
+interface or CLI. Available for **Android Termux ARM64**, **Ubuntu 22.04 ARMHF**
+(including Orange Pi PC), and **Ubuntu 24.04 x86_64** (Intel/AMD PCs).
 
 ## Features
 
@@ -29,14 +29,14 @@ Termux:
 pkg install curl tar coreutils util-linux
 ```
 
-Ubuntu / Armbian ARMHF:
+Ubuntu / Armbian:
 
 ```sh
 sudo apt update
 sudo apt install -y curl tar coreutils util-linux
 ```
 
-Install on either platform:
+The installer detects your platform and architecture. Install with:
 
 ```sh
 curl -fsSL https://github.com/samperez10/ecnl-bot/releases/latest/download/install.sh -o install-ecnl.sh
