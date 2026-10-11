@@ -208,6 +208,29 @@ else
         fi
         [[ "$VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Latest release must have a version tag such as v1.0.1."
     fi
+    # A release can update some architectures while retaining others on an older tag.
+    MANIFEST="$WORK_DIR/platform-versions.txt"
+    if [ "$GITHUB_AUTH" -eq 1 ]; then
+        MANIFEST_URL="$(gh api "repos/$REPO/releases/tags/$VERSION" \
+            --jq '.assets[] | select(.name == "platform-versions.txt") | .browser_download_url')" \
+            || fail "Cannot check platform release versions."
+        if [ -n "$MANIFEST_URL" ]; then
+            gh release download "$VERSION" --repo "$REPO" --dir "$WORK_DIR" \
+                --pattern platform-versions.txt >/dev/null 2>&1 || fail "Cannot download platform release versions."
+        fi
+    else
+        MANIFEST_STATUS="$(curl --proto '=https' --tlsv1.2 -fsSL --connect-timeout 5 --max-time 15 \
+            -o "$MANIFEST" -w '%{http_code}' \
+            "https://github.com/$REPO/releases/download/$VERSION/platform-versions.txt" 2>/dev/null)" || {
+                [ "$MANIFEST_STATUS" = 404 ] || fail "Cannot check platform release versions."
+                rm -f -- "$MANIFEST"
+            }
+    fi
+    if [ -f "$MANIFEST" ]; then
+        SELECTED_VERSION="$(sed -n "s/^$PLATFORM-$ARCH=\\(v[0-9][0-9]*\\.[0-9][0-9]*\\.[0-9][0-9]*\\)$/\\1/p" "$MANIFEST")"
+        [[ "$SELECTED_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "No compatible release listed for $PLATFORM/$ARCH."
+        VERSION="$SELECTED_VERSION"
+    fi
     if [ "$GITHUB_AUTH" -eq 1 ]; then
         command -v gh >/dev/null || fail "Private downloads require gh and an authenticated gh auth login session."
         RELEASE_ARGS=()
@@ -340,6 +363,8 @@ cp -- "$LAUNCHER_TEMP" "$WORK_DIR/launcher-copy"
     printf 'INSTALL_PREFIX=%q\n' "$(dirname -- "$BIN_DIR")"
     printf 'REPO=%q\n' "$REPO"
     printf 'GITHUB_AUTH=%q\n' "$GITHUB_AUTH"
+    printf 'PLATFORM=%q\n' "$PLATFORM"
+    printf 'ARCH=%q\n' "$ARCH"
     cat <<'EOF'
 # Checking and installing are serialized across simultaneous launcher invocations.
 LOCK="$APP_ROOT/.update-lock"
@@ -361,6 +386,27 @@ else
         -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest" 2>/dev/null)" || exit 0
     LATEST="${URL##*/}"
 fi
+[[ "$LATEST" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 0
+UPDATE_DIR="$(mktemp -d "$APP_ROOT/.install.update.XXXXXX")"
+MANIFEST="$UPDATE_DIR/platform-versions.txt"
+if [ "$GITHUB_AUTH" -eq 1 ]; then
+    MANIFEST_URL="$(timeout 10 gh api "repos/$REPO/releases/tags/$LATEST" \
+        --jq '.assets[] | select(.name == "platform-versions.txt") | .browser_download_url' 2>/dev/null)" || exit 0
+    if [ -n "$MANIFEST_URL" ]; then
+        timeout 10 gh release download "$LATEST" --repo "$REPO" --dir "$UPDATE_DIR" \
+            --pattern platform-versions.txt >/dev/null 2>&1 || exit 0
+    fi
+else
+    MANIFEST_STATUS="$(curl --proto '=https' --tlsv1.2 -fsSL --connect-timeout 3 --max-time 8 \
+        -o "$MANIFEST" -w '%{http_code}' \
+        "https://github.com/$REPO/releases/download/$LATEST/platform-versions.txt" 2>/dev/null)" || {
+            [ "$MANIFEST_STATUS" = 404 ] || exit 0
+            rm -f -- "$MANIFEST"
+        }
+fi
+if [ -f "$MANIFEST" ]; then
+    LATEST="$(sed -n "s/^$PLATFORM-$ARCH=\\(v[0-9][0-9]*\\.[0-9][0-9]*\\.[0-9][0-9]*\\)$/\\1/p" "$MANIFEST")"
+fi
 [[ "$LATEST" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || exit 0
 NEW_PARTS=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}")
 IFS= read -r CURRENT < "$APP_ROOT/current/VERSION" || exit 0
@@ -376,7 +422,6 @@ for i in 0 1 2; do
     if [ "$new" -lt "$old" ]; then exit 0; fi
 done
 [ "$NEWER" -eq 1 ] || exit 0
-UPDATE_DIR="$(mktemp -d "$APP_ROOT/.install.update.XXXXXX")"
 INSTALLER="$UPDATE_DIR/install.sh"
 AUTH_ARGS=()
 if [ "$GITHUB_AUTH" -eq 1 ]; then

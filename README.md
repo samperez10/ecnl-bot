@@ -11,6 +11,7 @@ interface or CLI. Available for **Android Termux ARM64**, **Ubuntu 22.04 ARMHF**
 
 - Solve Colors, Numbers, Math, and Body Parts tasks.
 - Run multiple enabled accounts concurrently.
+- Use optional account proxies with automatic assignment and replacement.
 - Monitor wallets, earnings, and task progress.
 - Pause or stop individual accounts or all accounts.
 - Set cooldowns and per-account wallet targets.
