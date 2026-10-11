@@ -1,3 +1,0 @@
-termux-aarch64=v1.3.0
-linux-x86_64=v1.3.0
-linux-armhf=v1.3.0
