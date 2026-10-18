@@ -5,7 +5,8 @@
 ECNL Auto Solver automates supported challenges on
 [ECNL Media Market](https://ecnlmediamarket.com/) through an interactive terminal
 interface or CLI. Available for **Android Termux ARM64**, **Ubuntu 22.04 ARMHF**
-(including Orange Pi PC), and **Ubuntu 24.04 x86_64** (Intel/AMD PCs).
+(including Orange Pi PC), **Ubuntu 24.04 x86_64** (Intel/AMD PCs), and
+**Alpine Linux 3.22 x86_64**.
 
 ## Features
 
@@ -35,6 +36,12 @@ Ubuntu / Armbian:
 ```sh
 sudo apt update
 sudo apt install -y curl tar coreutils util-linux
+```
+
+Alpine Linux:
+
+```sh
+apk add bash curl tar coreutils util-linux ca-certificates
 ```
 
 The installer detects your platform and architecture. Install with:

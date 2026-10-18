@@ -5,8 +5,13 @@ umask 077
 DEFAULT_REPO="samperez10/ecnl-bot"
 REPO="${ECNL_REPO:-$DEFAULT_REPO}"
 VERSION="latest"
-# Ubuntu in PRoot can expose /system too; identify glibc before Android.
-if getconf GNU_LIBC_VERSION >/dev/null 2>&1; then
+# PRoot can expose Android's /system; identify the Linux userland first.
+if [ -r /etc/alpine-release ]; then
+    PLATFORM=alpine
+    PLATFORM_LABEL="Alpine Linux"
+    DEFAULT_PREFIX="$HOME/.local"
+    DEPENDENCIES="apk add bash curl tar coreutils util-linux ca-certificates"
+elif getconf GNU_LIBC_VERSION >/dev/null 2>&1; then
     PLATFORM=linux
     PLATFORM_LABEL="Linux"
     DEFAULT_PREFIX="$HOME/.local"
@@ -17,7 +22,7 @@ elif [ -x /system/bin/linker64 ]; then
     DEFAULT_PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
     DEPENDENCIES="pkg install curl tar coreutils util-linux"
 else
-    echo "Error: ECNL requires Termux or a Linux system using glibc." >&2
+    echo "Error: ECNL requires Termux, Alpine Linux, or a Linux system using glibc." >&2
     exit 1
 fi
 INSTALL_PREFIX="$DEFAULT_PREFIX"
@@ -123,7 +128,9 @@ done
 
 # Prefer Ubuntu/Debian's userspace architecture over the host kernel.
 MACHINE="$(uname -m)"
-if [ "$PLATFORM" = linux ] && command -v dpkg >/dev/null; then
+if [ "$PLATFORM" = alpine ]; then
+    MACHINE="$(apk --print-arch)"
+elif [ "$PLATFORM" = linux ] && command -v dpkg >/dev/null; then
     MACHINE="$(dpkg --print-architecture)"
 fi
 case "$MACHINE" in
@@ -132,6 +139,12 @@ case "$MACHINE" in
     x86_64|amd64) ARCH="x86_64" ;;
     *) fail "Unsupported architecture: $MACHINE" ;;
 esac
+if [ "$PLATFORM" = alpine ]; then
+    case "$ARCH" in
+        x86_64|aarch64) ;;
+        *) fail "Alpine builds require x86_64 or aarch64." ;;
+    esac
+fi
 if [ "$PLATFORM" = termux ]; then
     [ "$ARCH" = aarch64 ] || fail "The Termux release requires ARM64."
 fi
